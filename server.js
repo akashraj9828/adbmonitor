@@ -9,7 +9,7 @@ const publicDir = join(root, 'public');
 const port = Number(process.env.PORT || 3000);
 const intervalMs = Math.max(1000, Number(process.env.POLL_INTERVAL || 2000));
 
-const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 
 function adb(args, timeout = 5000) {
   return new Promise((resolve, reject) => {

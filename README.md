@@ -1,6 +1,10 @@
-# ADB Monitor
+<p align="center">
+  <img src="public/logo.svg" alt="adbmonitor" width="260" />
+</p>
 
-An open-source, low-overhead Android device monitor with an htop-style web dashboard. It connects to any ADB device, streams live telemetry, and keeps the full process list visible—including the processes created by the monitor itself.
+<p align="center">A low-overhead, htop-style Android device monitor for ADB.</p>
+
+An open-source Android device monitor that connects to any ADB device, streams live telemetry, and keeps the full process list visible—including the processes created by the monitor itself.
 
 ![ADB Monitor dashboard](docs/screenshots/dashboard.png)
 
