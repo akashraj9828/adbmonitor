@@ -99,7 +99,7 @@ async function collect(serial) {
   const shell = command => adb(['-s', serial, 'shell', command]);
   const [meminfo, procfs] = await Promise.all([shell('cat /proc/meminfo'), collectProcfs(serial)]);
   const memory = parseMeminfo(meminfo);
-  const processes = procfs.processes.map(process => ({ ...process, memory: memory.total ? Math.round((process.rss / 1024 / memory.total) * 100000) / 1000 : 0 }));
+  const processes = procfs.processes.map(process => ({ ...process, memory: memory.total ? Math.round((process.rss * 1024 / memory.total) * 1000) / 10 : 0 }));
   return { serial, timestamp: new Date().toISOString(), cpu: { usage: procfs.usage, cores: coreCounts.get(serial) || 1, perCore: procfs.perCore }, memory, processes: processes.sort((a, b) => b.cpu - a.cpu) };
 }
 
