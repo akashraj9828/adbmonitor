@@ -54,8 +54,8 @@ adb devices
 ## Quick start
 
 ```sh
-git clone <your-fork-url>
-cd tv-monitor
+git clone https://github.com/akashraj9828/adbmonitor.git
+cd adbmonitor
 npm start
 ```
 
