@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADB Monitor</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div><p class="eyebrow">DEVICE TELEMETRY</p><h1>adb<span>monitor</span></h1></div>
+      <div class="connection"><span id="statusDot" class="dot idle"></span><span id="statusText">Looking for devices</span></div>
+    </header>
+    <section class="toolbar panel">
+      <div><label for="deviceSelect">TARGET DEVICE <span id="deviceCount">Scanning…</span></label><select id="deviceSelect"><option>Scanning…</option></select></div>
+      <button id="refreshBtn" title="Refresh devices">↻ <span>Refresh</span></button>
+      <div class="interval"><label for="interval">POLLING</label><span>2s</span></div>
+    </section>
+    <section class="metric-grid">
+      <article class="metric panel"><div class="metric-head"><span>CPU USAGE</span><b id="cpuValue">—</b></div><div class="meter"><i id="cpuBar"></i></div><p id="cpuMeta">Waiting for telemetry</p></article>
+      <article class="metric panel"><div class="metric-head"><span>MEMORY</span><b id="memValue">—</b></div><div class="meter purple"><i id="memBar"></i></div><p id="memMeta">Waiting for telemetry</p></article>
+      <article class="metric panel"><div class="metric-head"><span>PROCESSES</span><b id="processValue">—</b></div><div class="process-spark" id="spark"></div><p id="processMeta">Top processes by CPU</p></article>
+    </section>
+    <section class="process-panel panel"><div class="section-head"><div><p class="eyebrow">LIVE PROCESS TABLE</p><h2>Processes</h2></div><div class="table-tools"><input id="processFilter" type="search" placeholder="Filter all columns…" aria-label="Filter all process columns" /><span id="updated">—</span></div></div><div class="table-wrap"><table><thead><tr><th class="sortable" data-key="pid">PID <span></span></th><th class="sortable" data-key="name">PROCESS <span></span></th><th class="sortable" data-key="user">USER <span></span></th><th class="sortable" data-key="cpu">CPU <span></span></th><th class="sortable" data-key="memory">MEM % <span></span></th><th class="sortable" data-key="rss">RAM <span></span></th></tr></thead><tbody id="processes"><tr><td colspan="6" class="empty">Connect a device to begin monitoring</td></tr></tbody></table></div></section>
+    <footer><span>ADB Monitor</span><span>Requires <code>adb</code> on PATH</span></footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
