@@ -8,6 +8,8 @@ let filterText = '';
 let detailTimer;
 let detailTarget;
 let detailHistory = [];
+let overviewHistory = [];
+let overviewCharts = [];
 document.querySelector('#detailContent .detail-sections')?.insertAdjacentHTML('beforebegin', '<div class="history-card"><div class="history-head"><h3>Usage history</h3><span><i class="legend-cpu"></i> CPU <i class="legend-ram"></i> RAM %</span></div><canvas id="detailChart" height="150"></canvas></div>');
 const bytes = value => value > 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${(value / 1024 ** 2).toFixed(0)} MB`;
 const processRam = value => value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} GB` : value >= 1024 ? `${(value / 1024).toFixed(1)} MB` : `${value || 0} KB`;
@@ -32,6 +34,8 @@ function connect(serial) {
   if (!serial) return;
   if (source) source.close();
   selectedSerial = serial;
+  overviewHistory = [];
+  overviewCharts.forEach(chart => chart.destroy()); overviewCharts = [];
   setStatus(`Connected · ${serial}`);
   source = new EventSource(`/api/stream?serial=${encodeURIComponent(serial)}`);
   source.addEventListener('metrics', event => render(JSON.parse(event.data)));
@@ -39,9 +43,12 @@ function connect(serial) {
 }
 function render(data) {
   const cpu = data.cpu.usage, mem = data.memory, memPct = mem.total ? mem.used / mem.total * 100 : 0;
+  const coreAvg = data.cpu.perCore?.length ? data.cpu.perCore.reduce((sum, core) => sum + core.usage, 0) / data.cpu.perCore.length : 0;
+  overviewHistory.push({ time: new Date(data.timestamp), cpu, cores: (data.cpu.perCore || []).map(core => core.usage), memory: memPct, memoryGb: mem.used / 1024 ** 3, processes: data.processes.length }); if (overviewHistory.length > 180) overviewHistory.shift();
+  if (overviewCharts.length) updateOverviewChartNew();
   $('cpuValue').textContent = pct(cpu); $('cpuBar').style.width = `${Math.min(100, cpu)}%`; $('cpuMeta').textContent = `${data.cpu.cores} logical cores · system load`;
   $('coreUsage').innerHTML = (data.cpu.perCore || []).map(core => `<div class="core-row"><span>${core.name.toUpperCase()}</span><i><b style="width:${Math.min(100, core.usage)}%"></b></i><em>${pct(core.usage)}</em></div>`).join('');
-  $('memValue').textContent = `${bytes(mem.used)} / ${bytes(mem.total)}`; $('memBar').style.width = `${Math.min(100, memPct)}%`; $('memMeta').textContent = `${pct(memPct)} used`;
+  $('memValue').textContent = `${bytes(mem.used)} / ${bytes(mem.total)}`; $('memBar').style.width = `${Math.min(100, memPct)}%`; $('memMeta').textContent = `${bytes(mem.used)} used · ${pct(memPct)}`;
   processRows = data.processes;
   $('processValue').textContent = data.processes.length; $('updated').textContent = `Updated ${new Date(data.timestamp).toLocaleTimeString()}`;
   renderProcessTable();
@@ -88,6 +95,27 @@ async function refreshProcessDetail() {
   } catch (error) { $('detailLoading').hidden = true; $('detailContent').hidden = true; $('detailError').hidden = false; $('detailError').textContent = `Unable to read this process: ${error.message}`; }
 }
 function closeProcess() { clearInterval(detailTimer); detailTimer = undefined; detailTarget = undefined; $('processDetail').hidden = true; }
+function createOverviewChart() {
+  if (!window.Chart || overviewCharts.length) return;
+  const definitions = [['overviewCpuChart', 'CPU total %', 'cpu', '#9ce15b', 100, '%'], ['overviewCoreChart', 'Average core CPU %', 'coreAvg', '#ffb866', 100, '%'], ['overviewMemoryChart', 'RAM used %', 'memory', '#b399ff', 100, '%'], ['overviewProcessChart', 'Process count', 'processes', '#78c7ff', undefined, '']];
+  $('overviewChart').parentElement.innerHTML = definitions.map(([id, label]) => `<div class="overview-tile"><h3>${label}</h3><canvas id="${id}"></canvas></div>`).join('');
+  definitions.forEach(([id, label, key, color, max, suffix]) => { overviewCharts.push(new Chart($(id), { type: 'line', data: { labels: overviewHistory.map(sample => sample.time.toLocaleTimeString()), datasets: [{ label, data: overviewHistory.map(sample => sample[key]), borderColor: color, backgroundColor: color, tension: .25, pointRadius: 1, pointHoverRadius: 5, fill: false }] }, options: { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: false }, tooltip: { callbacks: { title: items => items[0]?.label || '' } } }, scales: { x: { ticks: { color: '#89919e', maxTicksLimit: 8 }, grid: { color: '#222630' } }, y: { beginAtZero: true, ...(max ? { max } : {}), ticks: { color, callback: value => `${value}${suffix}` }, grid: { color: '#292e38' } } } } })); });
+}
+function updateOverviewChart() { if (!overviewCharts.length) return; const keys = ['cpu', 'coreAvg', 'memory', 'processes'], labels = overviewHistory.map(sample => sample.time.toLocaleTimeString()); overviewCharts.forEach((chart, index) => { chart.data.labels = labels; chart.data.datasets[0].data = overviewHistory.map(sample => sample[keys[index]]); chart.update('none'); }); }
+function createOverviewChartNew() {
+  if (!window.Chart || overviewCharts.length) return;
+  const colors = ['#9ce15b', '#ffb866', '#b399ff', '#78c7ff', '#ff8d8d', '#8de5d1', '#d7a5ff', '#f4d35e'];
+  $('overviewChart').parentElement.innerHTML = '<div class="overview-tile"><h3>CPU total %</h3><canvas id="overviewCpuChart"></canvas></div><div class="overview-tile"><h3>CPU per core</h3><canvas id="overviewCoreChart"></canvas></div><div class="overview-tile"><h3>RAM usage</h3><canvas id="overviewMemoryChart"></canvas></div><div class="overview-tile"><h3>Process count</h3><canvas id="overviewProcessChart"></canvas></div>';
+  const labels = overviewHistory.map(sample => sample.time.toLocaleTimeString());
+  const options = (color, max, suffix = '%') => ({ responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#89919e', maxTicksLimit: 8 }, grid: { color: '#222630' } }, y: { beginAtZero: true, ...(max ? { max } : {}), ticks: { color, callback: value => `${value}${suffix}` }, grid: { color: '#292e38' } } } });
+  overviewCharts.push(new Chart($('overviewCpuChart'), { type: 'line', data: { labels, datasets: [{ label: 'CPU total %', data: overviewHistory.map(sample => sample.cpu), borderColor: '#9ce15b', pointRadius: 1, pointHoverRadius: 5, tension: .25 }] }, options: options('#9ce15b', 100) }));
+  const coreCount = Math.max(0, ...overviewHistory.map(sample => sample.cores.length)); overviewCharts.push(new Chart($('overviewCoreChart'), { type: 'line', data: { labels, datasets: Array.from({ length: coreCount }, (_, index) => ({ label: `CPU${index}`, data: overviewHistory.map(sample => sample.cores[index] ?? 0), borderColor: colors[index % colors.length], pointRadius: 1, pointHoverRadius: 5, tension: .25 })) }, options: { ...options('#aeb7c4', 100), plugins: { legend: { display: true, labels: { color: '#aeb7c4', boxWidth: 10 } } } } }));
+  overviewCharts.push(new Chart($('overviewMemoryChart'), { type: 'line', data: { labels, datasets: [{ label: 'RAM used', data: overviewHistory.map(sample => sample.memoryGb), borderColor: '#b399ff', pointRadius: 1, pointHoverRadius: 5, tension: .25, yAxisID: 'ram' }, { label: 'RAM used %', data: overviewHistory.map(sample => sample.memory), borderColor: '#78c7ff', pointRadius: 1, pointHoverRadius: 5, tension: .25, yAxisID: 'percent' }] }, options: { ...options('#b399ff', undefined, ' GB'), scales: { ...options('#b399ff', undefined, ' GB').scales, ram: { beginAtZero: true, position: 'left', ticks: { color: '#b399ff', callback: value => `${value} GB` }, grid: { color: '#292e38' } }, percent: { min: 0, max: 100, position: 'right', ticks: { color: '#78c7ff', callback: value => `${value}%` }, grid: { drawOnChartArea: false } } } } }));
+  overviewCharts.push(new Chart($('overviewProcessChart'), { type: 'line', data: { labels, datasets: [{ label: 'Process count', data: overviewHistory.map(sample => sample.processes), borderColor: '#78c7ff', pointRadius: 1, pointHoverRadius: 5, tension: .25 }] }, options: options('#78c7ff') }));
+}
+function updateOverviewChartNew() { if (!overviewCharts.length) return; const labels = overviewHistory.map(sample => sample.time.toLocaleTimeString()); overviewCharts[0].data.labels = labels; overviewCharts[0].data.datasets[0].data = overviewHistory.map(sample => sample.cpu); overviewCharts[1].data.labels = labels; overviewCharts[1].data.datasets.forEach((dataset, index) => { dataset.data = overviewHistory.map(sample => sample.cores[index] ?? 0); }); overviewCharts[2].data.labels = labels; overviewCharts[2].data.datasets[0].data = overviewHistory.map(sample => sample.memoryGb); overviewCharts[2].data.datasets[1].data = overviewHistory.map(sample => sample.memory); overviewCharts[3].data.labels = labels; overviewCharts[3].data.datasets[0].data = overviewHistory.map(sample => sample.processes); overviewCharts.forEach(chart => chart.update('none')); }
+function openOverview() { if (!selectedSerial) return; $('overviewSubtitle').textContent = `${selectedSerial} · last ${overviewHistory.length} samples`; $('overviewModal').hidden = false; createOverviewChartNew(); if (overviewCharts[2]?.options?.scales?.y) overviewCharts[2].options.scales.y.display = false; updateOverviewChartNew(); }
+function closeOverview() { $('overviewModal').hidden = true; }
 function drawHistory(id, samples) {
   const canvas = $(id), rect = canvas.getBoundingClientRect(), ratio = window.devicePixelRatio || 1, width = Math.max(280, rect.width), height = 150;
   canvas.width = width * ratio; canvas.height = height * ratio; const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height); context.strokeStyle = '#292e38'; context.lineWidth = 1;
@@ -101,4 +129,5 @@ document.querySelectorAll('th.sortable').forEach(header => header.addEventListen
 $('closeDetail').addEventListener('click', closeProcess);
 $('openFullDetail').addEventListener('click', () => { if (detailTarget) window.open(`/process.html?serial=${encodeURIComponent(detailTarget.serial)}&pid=${encodeURIComponent(detailTarget.pid)}`, '_blank', 'noopener'); });
 $('processDetail').addEventListener('click', event => { if (event.target.id === 'processDetail') closeProcess(); });
+$('openOverview').addEventListener('click', openOverview); $('closeOverview').addEventListener('click', closeOverview); $('overviewModal').addEventListener('click', event => { if (event.target.id === 'overviewModal') closeOverview(); }); $('openOverviewPage').addEventListener('click', () => { if (selectedSerial) window.open(`/overview.html?serial=${encodeURIComponent(selectedSerial)}`, '_blank', 'noopener'); });
 loadDevices();
