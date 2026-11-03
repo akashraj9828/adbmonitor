@@ -22,7 +22,12 @@ function adb(args, timeout = 5000) {
 
 async function devices() {
   const output = await adb(['devices']);
-  return output.split('\n').slice(1).map(line => line.trim().split(/\s+/)).filter(parts => parts[0] && parts[1] === 'device').map(([serial]) => serial);
+  const serials = output.split('\n').slice(1).map(line => line.trim().split(/\s+/)).filter(parts => parts[0] && parts[1] === 'device').map(([serial]) => serial);
+  return Promise.all(serials.map(async serial => {
+    const props = await adb(['-s', serial, 'shell', 'getprop']).catch(() => '');
+    const values = Object.fromEntries(props.split('\n').map(line => { const match = line.match(/^\[([^\]]+)\]: \[([^\]]*)\]/); return match ? [match[1], match[2]] : null; }).filter(Boolean));
+    return { serial, manufacturer: values['ro.product.manufacturer'] || 'Unknown manufacturer', model: values['ro.product.model'] || values['ro.product.name'] || 'Unknown model', android: values['ro.build.version.release'] || 'Unknown Android', product: values['ro.product.device'] || '' };
+  }));
 }
 
 function number(value) { return Number(String(value).replace(/[^0-9.-]/g, '')) || 0; }

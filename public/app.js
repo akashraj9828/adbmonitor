@@ -26,14 +26,17 @@ async function loadDevices() {
     const response = await fetch('/api/devices');
     if (!response.ok) throw new Error(await response.text());
     const { devices } = await response.json();
-    const select = $('deviceSelect');
-    const nextSerial = devices.includes(selectedSerial) ? selectedSerial : devices[0];
-    select.innerHTML = devices.length ? devices.map(device => `<option value="${device}">${device}</option>`).join('') : '<option value="">No ADB devices found</option>';
-    select.value = nextSerial || '';
+    const nextDevice = devices.find(device => device.serial === selectedSerial) || devices[0];
+    renderDeviceList(devices);
+    $('selectedDeviceName').textContent = nextDevice ? `${nextDevice.manufacturer} ${nextDevice.model}` : 'No ADB devices found';
     $('deviceCount').textContent = `${devices.length} connected`;
-    if (nextSerial && nextSerial !== selectedSerial) connect(nextSerial); else if (!devices.length) { selectedSerial = ''; if (source) source.close(); setStatus('No devices connected', 'idle'); }
-  } catch (error) { setStatus('ADB unavailable', 'error'); $('deviceSelect').innerHTML = '<option>Could not run adb</option>'; }
+    if (nextDevice && nextDevice.serial !== selectedSerial) connect(nextDevice.serial); else if (!devices.length) { selectedSerial = ''; if (source) source.close(); setStatus('No devices connected', 'idle'); }
+  } catch (error) { setStatus('ADB unavailable', 'error'); $('selectedDeviceName').textContent = 'Could not run adb'; }
 }
+
+function renderDeviceList(devices) { const list = $('deviceList'); list.innerHTML = devices.length ? devices.map(device => `<button class="device-option ${device.serial === selectedSerial ? 'selected' : ''}" data-serial="${device.serial}"><div><h3>${device.manufacturer} ${device.model}</h3><p>${device.serial}<br />Android ${device.android} · ${device.product || 'device identity unavailable'}</p></div><span class="device-check">${device.serial === selectedSerial ? '✓' : '→'}</span></button>`).join('') : '<div class="device-empty">No authorized ADB devices connected.</div>'; list.querySelectorAll('[data-serial]').forEach(button => button.addEventListener('click', () => { connect(button.dataset.serial); closeDeviceModal(); })); }
+function openDeviceModal() { $('deviceModal').hidden = false; }
+function closeDeviceModal() { $('deviceModal').hidden = true; }
 
 function setStatus(text, state = '') { $('statusText').textContent = text; $('statusDot').className = `dot ${state}`; }
 function connect(serial) {
@@ -128,7 +131,7 @@ function closeOverview() { $('overviewModal').hidden = true; }
 function drawHistory(id, samples) { const prefix = id === 'pageChart' ? 'page' : 'detail', visible = samples.slice(-detailRange), maxThreads = Math.max(1, ...visible.map(sample => sample.threads || 0)); [['Cpu', 'cpu', '#9ce15b', 100], ['Memory', 'memory', '#b399ff', 100], ['Threads', 'threads', '#78c7ff', maxThreads]].forEach(([suffix, key, color, max]) => { const canvas = $(`${prefix}${suffix}Chart`), rect = canvas.getBoundingClientRect(), ratio = window.devicePixelRatio || 1, width = Math.max(240, rect.width), height = 120; canvas.width = width * ratio; canvas.height = height * ratio; const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height); context.strokeStyle = '#292e38'; context.lineWidth = 1; [0, .5, 1].forEach(step => { const y = height * step; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke(); }); context.strokeStyle = color; context.lineWidth = 2; context.beginPath(); visible.forEach((sample, index) => { const x = visible.length === 1 ? width / 2 : index / (visible.length - 1) * width; const y = height - Math.min(max, sample[key]) / max * height; index ? context.lineTo(x, y) : context.moveTo(x, y); }); context.stroke(); }); attachDetailHover(prefix, visible); }
 function setupDetailHistoryControls() { const controls = $('detailHistoryControls'); if (!controls || controls.dataset.ready) return; controls.dataset.ready = '1'; controls.addEventListener('click', event => { if (event.target.dataset.range) { detailRange = Number(event.target.dataset.range); controls.querySelectorAll('[data-range]').forEach(button => button.classList.toggle('active', button.dataset.range === event.target.dataset.range)); drawHistory('detailChart', detailHistory); } if (event.target.id === 'detailPause') { detailPaused = !detailPaused; event.target.textContent = detailPaused ? 'Resume' : 'Pause'; } if (event.target.id === 'detailClear') { detailHistory = []; drawHistory('detailChart', detailHistory); } }); }
 function attachDetailHover(prefix, samples) { ['Cpu', 'Memory', 'Threads'].forEach(suffix => { const canvas = $(`${prefix}${suffix}Chart`); if (!canvas || canvas.dataset.hoverReady) return; canvas.dataset.hoverReady = '1'; canvas.addEventListener('mousemove', event => { const rect = canvas.getBoundingClientRect(), ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), index = Math.min(samples.length - 1, Math.round(ratio * Math.max(0, samples.length - 1))), sample = samples[index], tooltip = $(`${prefix}ProcessTooltip`); if (!sample || !tooltip) return; tooltip.hidden = false; tooltip.innerHTML = `${sample.time?.toLocaleTimeString() || ''}<br><span class="tooltip-cpu">CPU ${pct(sample.cpu)}</span> · <span class="tooltip-ram">RAM ${pct(sample.memory)}</span> · <span class="tooltip-threads">Threads ${sample.threads}`; tooltip.style.left = `${Math.min(rect.left - canvas.closest('.process-history').getBoundingClientRect().left + event.clientX - rect.left + 10, canvas.closest('.process-history').clientWidth - 180)}px`; tooltip.style.top = `${rect.top - canvas.closest('.process-history').getBoundingClientRect().top + 8}px`; }); canvas.addEventListener('mouseleave', () => { const tooltip = $(`${prefix}ProcessTooltip`); if (tooltip) tooltip.hidden = true; }); }); }
-$('deviceSelect').addEventListener('change', event => connect(event.target.value));
+$('devicePicker').addEventListener('click', openDeviceModal); $('closeDeviceModal').addEventListener('click', closeDeviceModal); $('deviceModal').addEventListener('click', event => { if (event.target.id === 'deviceModal') closeDeviceModal(); });
 $('refreshBtn').addEventListener('click', loadDevices);
 $('processFilter').value = filterText;
 $('processFilter').addEventListener('input', event => { filterText = event.target.value.trim().toLowerCase(); savePrefs(); renderProcessTable(); });
