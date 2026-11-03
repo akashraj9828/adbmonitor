@@ -136,4 +136,4 @@ Issues and pull requests are welcome. When reporting a collector discrepancy, in
 
 ## License
 
-No license has been selected for this repository yet. Add a license before distributing forks or accepting external contributions.
+This project is licensed under the [MIT License](LICENSE).
