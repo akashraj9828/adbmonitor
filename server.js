@@ -60,6 +60,23 @@ function diffCpu(previous, current) {
   return total > 0 ? Math.round((1 - idle / total) * 1000) / 10 : 0;
 }
 
+function parseStatus(text) {
+  const values = Object.fromEntries(text.split('\n').map(line => {
+    const match = line.match(/^([^:]+):\s*(.*)$/);
+    return match ? [match[1], match[2].trim()] : null;
+  }).filter(Boolean));
+  return { state: values.State || 'Unavailable', uid: values.Uid || 'Unavailable', threads: Number(values.Threads) || 0, vmSize: values.VmSize || 'Unavailable', vmRss: values.VmRSS || 'Unavailable', vmPeak: values.VmPeak || 'Unavailable' };
+}
+
+function parseMeminfoDetail(text) {
+  const readKb = label => {
+    const match = text.match(new RegExp(`^${label}\\s*:\\s*([\\d,]+)\\s*kB`, 'mi'));
+    return match ? Number(match[1].replace(/,/g, '')) : 0;
+  };
+  const total = text.match(/^TOTAL\s+(\d+)\s+(\d+)\s+(\d+)/mi);
+  return { pss: total ? Number(total[1]) : 0, privateDirty: readKb('Private Dirty'), swapPss: readKb('Swap Pss'), heapSize: readKb('Heap Size'), heapAlloc: readKb('Heap Alloc'), heapFree: readKb('Heap Free') };
+}
+
 const snapshots = new Map();
 async function collect(serial) {
   const shell = command => adb(['-s', serial, 'shell', command]);
@@ -74,6 +91,32 @@ async function collect(serial) {
   const previous = snapshots.get(serial);
   snapshots.set(serial, currentCpu);
   return { serial, timestamp: new Date().toISOString(), cpu: { usage: diffCpu(previous, currentCpu), cores: Number((await shell('nproc').catch(() => '1')).trim()) || 1 }, memory: parseMeminfo(meminfo), processes: parseProcesses(ps), cpuProcesses: parseCpuInfo(cpuInfo) };
+}
+
+async function collectProcess(serial, pid) {
+  if (!/^\d+$/.test(pid)) throw new Error('Invalid process id');
+  const shell = command => adb(['-s', serial, 'shell', command]);
+  const [status, commandLine, meminfo, ps, threadCount, limits, io, sched, fileDescriptors, maps] = await Promise.all([
+    shell(`cat /proc/${pid}/status`),
+    shell(`tr '\\0' ' ' < /proc/${pid}/cmdline`).catch(() => ''),
+    shell(`dumpsys meminfo ${pid}`).catch(() => ''),
+    shell(`ps -p ${pid} -o PID,USER,NAME,%CPU,%MEM,RSS,STAT,ARGS`).catch(() => ''),
+    shell(`ls -1 /proc/${pid}/task | wc -l`).catch(() => '0'),
+    shell(`cat /proc/${pid}/limits`).catch(() => ''),
+    shell(`cat /proc/${pid}/io`).catch(() => ''),
+    shell(`cat /proc/${pid}/sched`).catch(() => ''),
+    shell(`for f in /proc/${pid}/fd/*; do echo "$f -> $(readlink "$f")"; done`).catch(() => ''),
+    shell(`cat /proc/${pid}/maps | head -n 250`).catch(() => '')
+  ]);
+  const process = parseProcesses(ps)[0] || { pid: Number(pid), user: 'Unavailable', name: `PID ${pid}`, cpu: 0, memory: 0, rss: 0 };
+  const details = parseStatus(status);
+  details.threads = Number(threadCount.trim()) || details.threads;
+  const packageName = process.name.match(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+/)?.[0] || '';
+  const packageInfo = packageName ? await shell(`dumpsys package ${packageName} | head -n 220`).catch(() => '') : '';
+  const activityInfo = await shell(`dumpsys activity processes | grep -A 35 -B 5 "${pid}" | head -n 100`).catch(() => '');
+  const permissionInfo = packageName ? await shell(`dumpsys package ${packageName} | grep -A 160 -E "requested permissions:|install permissions:|runtime permissions:" | head -n 220`).catch(() => '') : '';
+  const permissions = [...new Set(`${packageInfo}\n${permissionInfo}`.match(/\b(?:android|com\.[A-Za-z0-9_.]+)\.permission\.[A-Z0-9_]+\b/g) || [])].sort();
+  return { pid: Number(pid), serial, timestamp: new Date().toISOString(), process, packageName, permissions, commandLine: commandLine.trim() || process.name, status: details, memory: parseMeminfoDetail(meminfo), diagnostics: { status, meminfo, limits, io, sched, fileDescriptors, maps, activityInfo, packageInfo: `${packageInfo}\n${permissionInfo}` } };
 }
 
 function send(res, event, data) { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
@@ -96,6 +139,14 @@ const server = createServer(async (req, res) => {
       const timer = setInterval(push, intervalMs);
       req.on('close', () => { active = false; clearInterval(timer); });
       return;
+    }
+    if (url.pathname === '/api/process') {
+      const serial = url.searchParams.get('serial');
+      const pid = url.searchParams.get('pid');
+      if (!serial || !pid) { res.writeHead(400); return res.end('serial and pid are required'); }
+      const detail = await collectProcess(serial, pid);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(detail));
     }
     const requested = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
     if (requested.includes('..')) { res.writeHead(400); return res.end('Bad request'); }

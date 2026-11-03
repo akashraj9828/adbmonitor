@@ -5,6 +5,8 @@ let processRows = [];
 let sortKey = 'cpu';
 let sortDirection = 'desc';
 let filterText = '';
+let detailTimer;
+let detailTarget;
 const bytes = value => value > 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${(value / 1024 ** 2).toFixed(0)} MB`;
 const processRam = value => value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} GB` : value >= 1024 ? `${(value / 1024).toFixed(1)} MB` : `${value || 0} KB`;
 const pct = value => `${Number(value || 0).toFixed(1)}%`;
@@ -49,11 +51,43 @@ function renderProcessTable() {
     const result = typeof left === 'number' && typeof right === 'number' ? left - right : String(left).localeCompare(String(right));
     return result * (sortDirection === 'asc' ? 1 : -1);
   });
-  $('processes').innerHTML = rows.length ? rows.map(p => `<tr><td>${p.pid}</td><td title="${p.name}">${p.name}</td><td>${p.user}</td><td>${pct(p.cpu)}</td><td>${pct(p.memory)}</td><td>${p.rss ? processRam(p.rss) : '—'}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No matching processes</td></tr>';
+  $('processes').innerHTML = rows.length ? rows.map(p => `<tr class="process-row" data-pid="${p.pid}" tabindex="0" title="Open process details"><td>${p.pid}</td><td title="${p.name}">${p.name}</td><td>${p.user}</td><td>${pct(p.cpu)}</td><td>${pct(p.memory)}</td><td>${p.rss ? processRam(p.rss) : '—'}</td></tr>`).join('') : '<tr><td colspan="6" class="empty">No matching processes</td></tr>';
+  document.querySelectorAll('.process-row').forEach(row => { row.addEventListener('click', () => openProcess(row.dataset.pid)); row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') openProcess(row.dataset.pid); }); });
   document.querySelectorAll('th.sortable').forEach(header => { const marker = header.querySelector('span'); marker.textContent = header.dataset.key === sortKey ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''; });
 }
+async function openProcess(pid) {
+  if (!selectedSerial) return;
+  detailTarget = { pid, serial: selectedSerial };
+  $('processDetail').hidden = false;
+  $('detailLoading').hidden = false;
+  $('detailError').hidden = true;
+  $('detailContent').hidden = true;
+  await refreshProcessDetail();
+  clearInterval(detailTimer);
+  detailTimer = setInterval(refreshProcessDetail, 2000);
+}
+async function refreshProcessDetail() {
+  if (!detailTarget) return;
+  try {
+    const response = await fetch(`/api/process?serial=${encodeURIComponent(detailTarget.serial)}&pid=${encodeURIComponent(detailTarget.pid)}`);
+    if (!response.ok) throw new Error(await response.text());
+    const data = await response.json(), p = data.process, status = data.status, memory = data.memory;
+    $('detailName').textContent = p.name; $('detailSubtitle').textContent = `PID ${data.pid} · ${data.serial}`;
+    $('detailCpu').textContent = pct(p.cpu); $('detailRam').textContent = processRam(p.rss); $('detailMemPct').textContent = pct(p.memory); $('detailThreads').textContent = status.threads || '—';
+    $('detailPid').textContent = data.pid; $('detailUser').textContent = `${p.user} · ${status.uid}`; $('detailState').textContent = status.state; $('detailPackage').textContent = data.packageName || 'Unavailable'; $('detailCommand').textContent = data.commandLine;
+    $('detailPss').textContent = memory.pss ? `${memory.pss} KB` : 'Unavailable'; $('detailPrivate').textContent = memory.privateDirty ? `${memory.privateDirty} KB` : 'Unavailable'; $('detailSwap').textContent = memory.swapPss ? `${memory.swapPss} KB` : 'Unavailable'; $('detailVmSize').textContent = status.vmSize;
+    $('detailPermissions').innerHTML = data.permissions?.length ? data.permissions.map(permission => `<li>${permission}</li>`).join('') : '<li>Unavailable or not an Android package process</li>';
+    const diagnostics = data.diagnostics || {};
+    $('detailFds').textContent = diagnostics.fileDescriptors || 'Unavailable or permission denied'; $('detailMeminfo').textContent = diagnostics.meminfo || 'Unavailable'; $('detailStatusRaw').textContent = `${diagnostics.status || ''}${diagnostics.limits || 'Limits unavailable'}`; $('detailIo').textContent = diagnostics.io || 'Unavailable or permission denied'; $('detailSched').textContent = diagnostics.sched || 'Unavailable or permission denied'; $('detailMaps').textContent = diagnostics.maps || 'Unavailable or permission denied'; $('detailActivity').textContent = diagnostics.activityInfo || 'Unavailable or no activity-manager record'; $('detailPackageInfo').textContent = diagnostics.packageInfo || 'Unavailable or not an Android package process';
+    $('detailLoading').hidden = true; $('detailContent').hidden = false;
+  } catch (error) { $('detailLoading').hidden = true; $('detailContent').hidden = true; $('detailError').hidden = false; $('detailError').textContent = `Unable to read this process: ${error.message}`; }
+}
+function closeProcess() { clearInterval(detailTimer); detailTimer = undefined; detailTarget = undefined; $('processDetail').hidden = true; }
 $('deviceSelect').addEventListener('change', event => connect(event.target.value));
 $('refreshBtn').addEventListener('click', loadDevices);
 $('processFilter').addEventListener('input', event => { filterText = event.target.value.trim().toLowerCase(); renderProcessTable(); });
 document.querySelectorAll('th.sortable').forEach(header => header.addEventListener('click', () => { if (sortKey === header.dataset.key) sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'; else { sortKey = header.dataset.key; sortDirection = 'asc'; } renderProcessTable(); }));
+$('closeDetail').addEventListener('click', closeProcess);
+$('openFullDetail').addEventListener('click', () => { if (detailTarget) window.open(`/process.html?serial=${encodeURIComponent(detailTarget.serial)}&pid=${encodeURIComponent(detailTarget.pid)}`, '_blank', 'noopener'); });
+$('processDetail').addEventListener('click', event => { if (event.target.id === 'processDetail') closeProcess(); });
 loadDevices();
