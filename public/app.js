@@ -1,11 +1,13 @@
 const $ = id => document.getElementById(id);
+const urlState = new URLSearchParams(location.search);
 const savedPrefs = JSON.parse(localStorage.getItem('adb-monitor-preferences') || '{}');
+const preference = (key, fallback = '') => urlState.get(key) ?? savedPrefs[key] ?? fallback;
 let source;
-let selectedSerial = savedPrefs.serial || '';
+let selectedSerial = preference('serial');
 let processRows = [];
-let sortKey = savedPrefs.sortKey || 'cpu';
-let sortDirection = savedPrefs.sortDirection || 'desc';
-let filterText = savedPrefs.filterText || '';
+let sortKey = preference('sort', 'cpu');
+let sortDirection = preference('dir', 'desc');
+let filterText = preference('filter');
 let detailTimer;
 let detailTarget;
 let detailHistory = [];
@@ -14,12 +16,22 @@ let detailPaused = false;
 let overviewHistory = [];
 let overviewCharts = [];
 let overviewPaused = false;
-let overviewRange = savedPrefs.overviewRange || 150;
+let overviewRange = Number(preference('range', 150)) || 150;
 document.querySelector('#detailContent .detail-sections')?.insertAdjacentHTML('beforebegin', '<div class="history-card process-history"><div id="detailHistoryControls" class="chart-toolbar"><span>History</span><button data-range="30">1m</button><button data-range="60" class="active">2m</button><button data-range="450">15m</button><button id="detailPause">Pause</button><button id="detailClear">Clear</button></div><div class="history-head"><h3>Usage history</h3></div><div class="process-history-grid"><div><span class="chart-label"><i class="legend-cpu"></i> CPU %</span><canvas id="detailCpuChart" height="120"></canvas></div><div><span class="chart-label"><i class="legend-ram"></i> RAM %</span><canvas id="detailMemoryChart" height="120"></canvas></div><div><span class="chart-label"><i class="legend-threads"></i> Threads</span><canvas id="detailThreadsChart" height="120"></canvas></div></div><div id="detailProcessTooltip" class="process-tooltip" hidden></div></div>');
 const bytes = value => value > 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${(value / 1024 ** 2).toFixed(0)} MB`;
 const processRam = value => value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} GB` : value >= 1024 ? `${(value / 1024).toFixed(1)} MB` : `${value || 0} KB`;
 const pct = value => `${Number(value || 0).toFixed(1)}%`;
-function savePrefs() { localStorage.setItem('adb-monitor-preferences', JSON.stringify({ serial: selectedSerial, sortKey, sortDirection, filterText, overviewRange })); }
+function savePrefs() {
+  const preferences = { serial: selectedSerial, sortKey, sortDirection, filterText, overviewRange };
+  localStorage.setItem('adb-monitor-preferences', JSON.stringify(preferences));
+  const nextUrl = new URL(location.href);
+  nextUrl.searchParams.set('serial', selectedSerial);
+  nextUrl.searchParams.set('sort', sortKey);
+  nextUrl.searchParams.set('dir', sortDirection);
+  nextUrl.searchParams.set('filter', filterText);
+  nextUrl.searchParams.set('range', String(overviewRange));
+  window.history.replaceState(null, '', nextUrl);
+}
 
 async function loadDevices() {
   try {
@@ -30,7 +42,19 @@ async function loadDevices() {
     renderDeviceList(devices);
     $('selectedDeviceName').textContent = nextDevice ? `${nextDevice.manufacturer} ${nextDevice.model}` : 'No ADB devices found';
     $('deviceCount').textContent = `${devices.length} connected`;
-    if (nextDevice && nextDevice.serial !== selectedSerial) connect(nextDevice.serial); else if (!devices.length) { selectedSerial = ''; if (source) source.close(); setStatus('No devices connected', 'idle'); }
+    if (nextDevice) {
+      if (nextDevice.serial !== selectedSerial || !source) connect(nextDevice.serial);
+    } else {
+      selectedSerial = '';
+      if (source) source.close();
+      source = undefined;
+      savePrefs();
+      processRows = [];
+      renderProcessTable();
+      $('cpuValue').textContent = '—'; $('memValue').textContent = '—'; $('processValue').textContent = '—';
+      $('cpuMeta').textContent = 'Select a device to begin monitoring'; $('memMeta').textContent = 'Select a device to begin monitoring'; $('processMeta').textContent = 'Select a device to begin monitoring';
+      setStatus('No devices connected', 'idle');
+    }
   } catch (error) { setStatus('ADB unavailable', 'error'); $('selectedDeviceName').textContent = 'Could not run adb'; }
 }
 
