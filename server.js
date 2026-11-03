@@ -105,9 +105,13 @@ async function collect(serial) {
 
 function parseProcfsSnapshot(text) {
   return text.trim().split('\n').filter(Boolean).map(line => {
-    const [pid, name, state, userTicks, systemTicks, rssPages] = line.split('|');
-    return { pid: Number(pid), name, state, ticks: Number(userTicks || 0) + Number(systemTicks || 0), rss: Number(rssPages || 0) * 4 };
-  }).filter(process => process.pid);
+    const separator = line.indexOf('|');
+    if (separator < 1) return null;
+    const pid = Number(line.slice(0, separator)), raw = line.slice(separator + 1), open = raw.indexOf('('), close = raw.lastIndexOf(') ');
+    if (!pid || open < 0 || close < 0) return null;
+    const name = raw.slice(open + 1, close), fields = raw.slice(close + 2).trim().split(/\s+/);
+    return { pid, name, state: fields[0], ticks: Number(fields[11] || 0) + Number(fields[12] || 0), rss: Number(fields[21] || 0) * 4 };
+  }).filter(Boolean);
 }
 
 function parseProcfsStatus(text) {
@@ -141,9 +145,9 @@ async function collectProcfs(serial) {
   const shell = command => adb(['-s', serial, 'shell', command], 10000);
   const [stat, output, statusOutput, cmdlineOutput] = await Promise.all([
     shell('cat /proc/stat'),
-    shell("awk '{openpos=index($0,\"(\"); endpos=index($0,\") \" ); comm=substr($0,openpos+1,endpos-openpos-1); rest=substr($0,endpos+2); split(rest,a,\" \" ); print $1 \"|\" comm \"|\" a[1] \"|\" a[12] \"|\" a[13] \"|\" a[22]}' /proc/[0-9]*/stat 2>/dev/null || true"),
+    shell("for d in /proc/[0-9]*; do pid=${d#/proc/}; if read -r line < \"$d/stat\"; then echo \"$pid|$line\"; fi; done"),
     shell("awk 'FNR==1 { if (pid != \"\") print pid \"|\" name \"|\" uid \"|\" rss; pid=FILENAME; sub(/^\\/proc\\//,\"\",pid); sub(/\\/status$/,\"\",pid); name=\"\"; uid=\"\"; rss=0 } /^Name:/ {name=$2} /^Uid:/ {uid=$2} /^VmRSS:/ {rss=$2} END {if (pid != \"\") print pid \"|\" name \"|\" uid \"|\" rss}' /proc/[0-9]*/status 2>/dev/null || true"),
-    shell("awk -v RS='\\0' 'FNR==1 {pid=FILENAME; sub(/^\\/proc\\//,\"\",pid); sub(/\\/cmdline$/,\"\",pid); if (length($0)>0) print pid \"|\" $0}' /proc/[0-9]*/cmdline 2>/dev/null || true")
+    shell("for d in /proc/[0-9]*; do pid=${d#/proc/}; command=; read command < \"$d/cmdline\"; if [ -n \"$command\" ]; then echo \"$pid|$command\"; fi; done")
   ]);
   const current = parseProcfsSnapshot(output);
   const statusByPid = parseProcfsStatus(statusOutput);
