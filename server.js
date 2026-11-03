@@ -226,6 +226,28 @@ async function collectProcess(serial, pid) {
 
 function send(res, event, data) { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); }
 
+const processActions = new Set(['logs', 'stack', 'settings', 'kill', 'force-stop', 'restart']);
+function validPackage(value) { return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(value); }
+async function runProcessAction(serial, pid, action, packageName = '') {
+  if (!serial || !/^\d+$/.test(String(pid))) throw new Error('A valid device serial and process ID are required');
+  if (!processActions.has(action)) throw new Error('Unsupported process action');
+  const target = String(pid);
+  if (action === 'logs') return { action, output: await adb(['-s', serial, 'shell', `logcat -d --pid=${target} -t 200 -v threadtime`]) };
+  if (action === 'stack') return { action, output: await adb(['-s', serial, 'shell', `debuggerd -b ${target}`]) };
+  if (!validPackage(packageName)) throw new Error('This process does not expose a valid Android package name');
+  if (action === 'settings') return { action, output: await adb(['-s', serial, 'shell', 'am', 'start', '-a', 'android.settings.APPLICATION_DETAILS_SETTINGS', '-d', `package:${packageName}`]) };
+  if (action === 'kill') return { action, output: await adb(['-s', serial, 'shell', 'kill', '-TERM', target]) };
+  if (action === 'force-stop') return { action, output: await adb(['-s', serial, 'shell', 'am', 'force-stop', packageName]) };
+  await adb(['-s', serial, 'shell', 'am', 'force-stop', packageName]);
+  return { action, output: await adb(['-s', serial, 'shell', 'monkey', '-p', packageName, '1']) };
+}
+async function locatePackageProcess(serial, packageName) {
+  if (!validPackage(packageName)) throw new Error('A valid Android package name is required');
+  const snapshot = await collect(serial);
+  const match = snapshot.processes.find(process => process.name === packageName || process.name.startsWith(`${packageName}:`));
+  return { serial, packageName, process: match || null };
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
@@ -252,6 +274,21 @@ const server = createServer(async (req, res) => {
       const detail = await collectProcess(serial, pid);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       return res.end(JSON.stringify(detail));
+    }
+    if (url.pathname === '/api/process-action' && req.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+      const result = await runProcessAction(body.serial, body.pid, body.action, body.packageName);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(result));
+    }
+    if (url.pathname === '/api/process-locate') {
+      const serial = url.searchParams.get('serial');
+      const packageName = url.searchParams.get('packageName');
+      const result = await locatePackageProcess(serial, packageName);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(result));
     }
     if (url.pathname === '/api/compare') {
       const serial = url.searchParams.get('serial');

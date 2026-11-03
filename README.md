@@ -110,6 +110,18 @@ The endpoint compares a lightweight procfs snapshot with `ps` output, including 
 | `GET /api/process?serial=...&pid=...` | Fetch detailed process diagnostics |
 | `GET /api/compare?serial=...` | Compare procfs collection with `ps` |
 
+## Process actions
+
+Process detail pages provide confirmation-gated actions for logs, stack traces, app settings, diagnostics copy, and refreshing process data. Potentially disruptive actions are isolated in a red Danger zone and require an additional confirmation:
+
+- Kill the selected PID
+- Force-stop the owning package
+- Restart the owning package
+
+After a restart, the page locates the package's new PID and automatically re-attaches the live details and history stream.
+
+ADB permissions and Android build restrictions still apply. A failed action is reported in the page instead of being silently retried.
+
 ## Project structure
 
 ```text
