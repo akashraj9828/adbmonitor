@@ -1,21 +1,25 @@
 const $ = id => document.getElementById(id);
+const savedPrefs = JSON.parse(localStorage.getItem('adb-monitor-preferences') || '{}');
 let source;
-let selectedSerial = '';
+let selectedSerial = savedPrefs.serial || '';
 let processRows = [];
-let sortKey = 'cpu';
-let sortDirection = 'desc';
-let filterText = '';
+let sortKey = savedPrefs.sortKey || 'cpu';
+let sortDirection = savedPrefs.sortDirection || 'desc';
+let filterText = savedPrefs.filterText || '';
 let detailTimer;
 let detailTarget;
 let detailHistory = [];
+let detailRange = 60;
+let detailPaused = false;
 let overviewHistory = [];
 let overviewCharts = [];
 let overviewPaused = false;
-let overviewRange = 150;
-document.querySelector('#detailContent .detail-sections')?.insertAdjacentHTML('beforebegin', '<div class="history-card"><div class="history-head"><h3>Usage history</h3><span><i class="legend-cpu"></i> CPU <i class="legend-ram"></i> RAM %</span></div><canvas id="detailChart" height="150"></canvas></div>');
+let overviewRange = savedPrefs.overviewRange || 150;
+document.querySelector('#detailContent .detail-sections')?.insertAdjacentHTML('beforebegin', '<div class="history-card process-history"><div id="detailHistoryControls" class="chart-toolbar"><span>History</span><button data-range="30">1m</button><button data-range="60" class="active">2m</button><button data-range="450">15m</button><button id="detailPause">Pause</button><button id="detailClear">Clear</button></div><div class="history-head"><h3>Usage history</h3></div><div class="process-history-grid"><div><span class="chart-label"><i class="legend-cpu"></i> CPU %</span><canvas id="detailCpuChart" height="120"></canvas></div><div><span class="chart-label"><i class="legend-ram"></i> RAM %</span><canvas id="detailMemoryChart" height="120"></canvas></div><div><span class="chart-label"><i class="legend-threads"></i> Threads</span><canvas id="detailThreadsChart" height="120"></canvas></div></div><div id="detailProcessTooltip" class="process-tooltip" hidden></div></div>');
 const bytes = value => value > 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${(value / 1024 ** 2).toFixed(0)} MB`;
 const processRam = value => value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} GB` : value >= 1024 ? `${(value / 1024).toFixed(1)} MB` : `${value || 0} KB`;
 const pct = value => `${Number(value || 0).toFixed(1)}%`;
+function savePrefs() { localStorage.setItem('adb-monitor-preferences', JSON.stringify({ serial: selectedSerial, sortKey, sortDirection, filterText, overviewRange })); }
 
 async function loadDevices() {
   try {
@@ -36,6 +40,7 @@ function connect(serial) {
   if (!serial) return;
   if (source) source.close();
   selectedSerial = serial;
+  savePrefs();
   overviewHistory = [];
   overviewPaused = false;
   overviewCharts.forEach(chart => chart.destroy()); overviewCharts = [];
@@ -72,6 +77,7 @@ async function openProcess(pid) {
   if (!selectedSerial) return;
   detailTarget = { pid, serial: selectedSerial };
   detailHistory = [];
+  detailPaused = false;
   $('processDetail').hidden = false;
   $('detailLoading').hidden = false;
   $('detailError').hidden = true;
@@ -90,7 +96,7 @@ async function refreshProcessDetail() {
     $('detailCpu').textContent = pct(p.cpu); $('detailRam').textContent = processRam(p.rss); $('detailMemPct').textContent = pct(p.memory); $('detailThreads').textContent = status.threads || '—';
     $('detailPid').textContent = data.pid; $('detailUser').textContent = `${p.user} · ${status.uid}`; $('detailState').textContent = status.state; $('detailPackage').textContent = data.packageName || 'Unavailable'; $('detailCommand').textContent = data.commandLine;
     $('detailPss').textContent = memory.pss ? `${memory.pss} KB` : 'Unavailable'; $('detailPrivate').textContent = memory.privateDirty ? `${memory.privateDirty} KB` : 'Unavailable'; $('detailSwap').textContent = memory.swapPss ? `${memory.swapPss} KB` : 'Unavailable'; $('detailVmSize').textContent = status.vmSize;
-    detailHistory.push({ cpu: Number(p.cpu) || 0, memory: Number(p.memory) || 0 }); if (detailHistory.length > 60) detailHistory.shift(); drawHistory('detailChart', detailHistory);
+    if (!detailPaused) { detailHistory.push({ time: new Date(data.timestamp), cpu: Number(p.cpu) || 0, memory: Number(p.memory) || 0, threads: Number(status.threads) || 0 }); if (detailHistory.length > 450) detailHistory.shift(); } drawHistory('detailChart', detailHistory); setupDetailHistoryControls();
     $('detailPermissions').innerHTML = data.permissions?.length ? data.permissions.map(permission => `<li>${permission}</li>`).join('') : '<li>Unavailable or not an Android package process</li>';
     const diagnostics = data.diagnostics || {};
     $('detailFds').textContent = diagnostics.fileDescriptors || 'Unavailable or permission denied'; $('detailMeminfo').textContent = diagnostics.meminfo || 'Unavailable'; $('detailStatusRaw').textContent = `${diagnostics.status || ''}${diagnostics.limits || 'Limits unavailable'}`; $('detailIo').textContent = diagnostics.io || 'Unavailable or permission denied'; $('detailSched').textContent = diagnostics.sched || 'Unavailable or permission denied'; $('detailMaps').textContent = diagnostics.maps || 'Unavailable or permission denied'; $('detailActivity').textContent = diagnostics.activityInfo || 'Unavailable or no activity-manager record'; $('detailPackageInfo').textContent = diagnostics.packageInfo || 'Unavailable or not an Android package process';
@@ -119,16 +125,14 @@ function createOverviewChartNew() {
 function updateOverviewChartNew() { if (!overviewCharts.length) return; const labels = overviewHistory.map(sample => sample.time.toLocaleTimeString()); overviewCharts[0].data.labels = labels; overviewCharts[0].data.datasets[0].data = overviewHistory.map(sample => sample.cpu); overviewCharts[1].data.labels = labels; overviewCharts[1].data.datasets.forEach((dataset, index) => { dataset.data = overviewHistory.map(sample => sample.cores[index] ?? 0); }); overviewCharts[2].data.labels = labels; overviewCharts[2].data.datasets[0].data = overviewHistory.map(sample => sample.memoryGb); overviewCharts[2].data.datasets[1].data = overviewHistory.map(sample => sample.memory); overviewCharts[3].data.labels = labels; overviewCharts[3].data.datasets[0].data = overviewHistory.map(sample => sample.processes); overviewCharts.forEach(chart => chart.update('none')); }
 function openOverview() { if (!selectedSerial) return; $('overviewSubtitle').textContent = `${selectedSerial} · last ${overviewHistory.length} samples`; $('overviewModal').hidden = false; createOverviewChartNew(); if (overviewCharts[2]?.options?.scales?.y) overviewCharts[2].options.scales.y.display = false; setupOverviewControls(); syncOverviewCharts(overviewCharts); updateOverviewChartUX(); }
 function closeOverview() { $('overviewModal').hidden = true; }
-function drawHistory(id, samples) {
-  const canvas = $(id), rect = canvas.getBoundingClientRect(), ratio = window.devicePixelRatio || 1, width = Math.max(280, rect.width), height = 150;
-  canvas.width = width * ratio; canvas.height = height * ratio; const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height); context.strokeStyle = '#292e38'; context.lineWidth = 1;
-  [0, .5, 1].forEach(step => { const y = height * step; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke(); });
-  [['cpu', '#9ce15b'], ['memory', '#b399ff']].forEach(([key, color]) => { if (!samples.length) return; context.strokeStyle = color; context.lineWidth = 2; context.beginPath(); samples.forEach((sample, index) => { const x = samples.length === 1 ? width / 2 : index / (samples.length - 1) * width; const y = height - Math.min(100, sample[key]) / 100 * height; index ? context.lineTo(x, y) : context.moveTo(x, y); }); context.stroke(); });
-}
+function drawHistory(id, samples) { const prefix = id === 'pageChart' ? 'page' : 'detail', visible = samples.slice(-detailRange), maxThreads = Math.max(1, ...visible.map(sample => sample.threads || 0)); [['Cpu', 'cpu', '#9ce15b', 100], ['Memory', 'memory', '#b399ff', 100], ['Threads', 'threads', '#78c7ff', maxThreads]].forEach(([suffix, key, color, max]) => { const canvas = $(`${prefix}${suffix}Chart`), rect = canvas.getBoundingClientRect(), ratio = window.devicePixelRatio || 1, width = Math.max(240, rect.width), height = 120; canvas.width = width * ratio; canvas.height = height * ratio; const context = canvas.getContext('2d'); context.scale(ratio, ratio); context.clearRect(0, 0, width, height); context.strokeStyle = '#292e38'; context.lineWidth = 1; [0, .5, 1].forEach(step => { const y = height * step; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke(); }); context.strokeStyle = color; context.lineWidth = 2; context.beginPath(); visible.forEach((sample, index) => { const x = visible.length === 1 ? width / 2 : index / (visible.length - 1) * width; const y = height - Math.min(max, sample[key]) / max * height; index ? context.lineTo(x, y) : context.moveTo(x, y); }); context.stroke(); }); attachDetailHover(prefix, visible); }
+function setupDetailHistoryControls() { const controls = $('detailHistoryControls'); if (!controls || controls.dataset.ready) return; controls.dataset.ready = '1'; controls.addEventListener('click', event => { if (event.target.dataset.range) { detailRange = Number(event.target.dataset.range); controls.querySelectorAll('[data-range]').forEach(button => button.classList.toggle('active', button.dataset.range === event.target.dataset.range)); drawHistory('detailChart', detailHistory); } if (event.target.id === 'detailPause') { detailPaused = !detailPaused; event.target.textContent = detailPaused ? 'Resume' : 'Pause'; } if (event.target.id === 'detailClear') { detailHistory = []; drawHistory('detailChart', detailHistory); } }); }
+function attachDetailHover(prefix, samples) { ['Cpu', 'Memory', 'Threads'].forEach(suffix => { const canvas = $(`${prefix}${suffix}Chart`); if (!canvas || canvas.dataset.hoverReady) return; canvas.dataset.hoverReady = '1'; canvas.addEventListener('mousemove', event => { const rect = canvas.getBoundingClientRect(), ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), index = Math.min(samples.length - 1, Math.round(ratio * Math.max(0, samples.length - 1))), sample = samples[index], tooltip = $(`${prefix}ProcessTooltip`); if (!sample || !tooltip) return; tooltip.hidden = false; tooltip.innerHTML = `${sample.time?.toLocaleTimeString() || ''}<br><span class="tooltip-cpu">CPU ${pct(sample.cpu)}</span> · <span class="tooltip-ram">RAM ${pct(sample.memory)}</span> · <span class="tooltip-threads">Threads ${sample.threads}`; tooltip.style.left = `${Math.min(rect.left - canvas.closest('.process-history').getBoundingClientRect().left + event.clientX - rect.left + 10, canvas.closest('.process-history').clientWidth - 180)}px`; tooltip.style.top = `${rect.top - canvas.closest('.process-history').getBoundingClientRect().top + 8}px`; }); canvas.addEventListener('mouseleave', () => { const tooltip = $(`${prefix}ProcessTooltip`); if (tooltip) tooltip.hidden = true; }); }); }
 $('deviceSelect').addEventListener('change', event => connect(event.target.value));
 $('refreshBtn').addEventListener('click', loadDevices);
-$('processFilter').addEventListener('input', event => { filterText = event.target.value.trim().toLowerCase(); renderProcessTable(); });
-document.querySelectorAll('th.sortable').forEach(header => header.addEventListener('click', () => { if (sortKey === header.dataset.key) sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'; else { sortKey = header.dataset.key; sortDirection = 'asc'; } renderProcessTable(); }));
+$('processFilter').value = filterText;
+$('processFilter').addEventListener('input', event => { filterText = event.target.value.trim().toLowerCase(); savePrefs(); renderProcessTable(); });
+document.querySelectorAll('th.sortable').forEach(header => header.addEventListener('click', () => { if (sortKey === header.dataset.key) sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'; else { sortKey = header.dataset.key; sortDirection = 'asc'; } savePrefs(); renderProcessTable(); }));
 $('closeDetail').addEventListener('click', closeProcess);
 $('openFullDetail').addEventListener('click', () => { if (detailTarget) window.open(`/process.html?serial=${encodeURIComponent(detailTarget.serial)}&pid=${encodeURIComponent(detailTarget.pid)}`, '_blank', 'noopener'); });
 $('processDetail').addEventListener('click', event => { if (event.target.id === 'processDetail') closeProcess(); });
