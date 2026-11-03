@@ -94,7 +94,7 @@ async function reattachToPackage(packageName) {
 async function runAction(action) {
   if (!latestDetail) return;
   const label = actionLabels[action] || action;
-  if (!await askForConfirmation(action, label)) return;
+  if (dangerousActions.has(action) && !await askForConfirmation(action, label)) return;
   document.querySelectorAll('[data-action]').forEach(button => { button.disabled = true; });
   showActionResult(`${label}…`);
   try {
