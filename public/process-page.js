@@ -54,6 +54,25 @@ async function copyDiagnostics() {
   await navigator.clipboard.writeText(text);
   showActionResult('Diagnostics copied to the clipboard.');
 }
+let confirmationResolver;
+function askForConfirmation(action, label) {
+  return new Promise(resolve => {
+    confirmationResolver = resolve;
+    const modal = $('actionConfirm'), title = $('actionConfirmTitle'), message = $('actionConfirmMessage'), proceed = $('actionConfirmProceed');
+    const dangerous = dangerousActions.has(action);
+    title.textContent = label;
+    message.textContent = dangerous ? `This can interrupt or restart ${latestDetail.packageName || `PID ${latestDetail.pid}`} and may cause data loss. Are you sure you want to continue?` : `Run “${label}” for ${latestDetail.packageName || `PID ${latestDetail.pid}`}?`;
+    proceed.textContent = dangerous ? 'Yes, continue' : 'Confirm';
+    proceed.classList.toggle('danger-confirm', dangerous);
+    modal.hidden = false;
+    proceed.focus();
+  });
+}
+function finishConfirmation(confirmed) {
+  const modal = $('actionConfirm');
+  modal.hidden = true;
+  if (confirmationResolver) { const resolve = confirmationResolver; confirmationResolver = undefined; resolve(confirmed); }
+}
 async function reattachToPackage(packageName) {
   showActionResult(`Waiting for ${packageName} to start…`);
   for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -75,8 +94,7 @@ async function reattachToPackage(packageName) {
 async function runAction(action) {
   if (!latestDetail) return;
   const label = actionLabels[action] || action;
-  const warning = dangerousActions.has(action) ? `Dangerous action: ${label} for ${latestDetail.packageName || `PID ${latestDetail.pid}`}? This may interrupt the app.` : `Run “${label}” for ${latestDetail.packageName || `PID ${latestDetail.pid}`}?`;
-  if (!window.confirm(warning)) return;
+  if (!await askForConfirmation(action, label)) return;
   document.querySelectorAll('[data-action]').forEach(button => { button.disabled = true; });
   showActionResult(`${label}…`);
   try {
@@ -92,3 +110,7 @@ async function runAction(action) {
   finally { document.querySelectorAll('[data-action]').forEach(button => { button.disabled = false; }); }
 }
 document.querySelectorAll('[data-action]').forEach(button => button.addEventListener('click', () => runAction(button.dataset.action)));
+$('actionConfirmCancel').addEventListener('click', () => finishConfirmation(false));
+$('actionConfirmProceed').addEventListener('click', () => finishConfirmation(true));
+$('actionConfirm').addEventListener('click', event => { if (event.target.id === 'actionConfirm') finishConfirmation(false); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('actionConfirm').hidden) finishConfirmation(false); });
