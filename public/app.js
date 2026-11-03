@@ -38,6 +38,7 @@ function connect(serial) {
 function render(data) {
   const cpu = data.cpu.usage, mem = data.memory, memPct = mem.total ? mem.used / mem.total * 100 : 0;
   $('cpuValue').textContent = pct(cpu); $('cpuBar').style.width = `${Math.min(100, cpu)}%`; $('cpuMeta').textContent = `${data.cpu.cores} logical cores · system load`;
+  $('coreUsage').innerHTML = (data.cpu.perCore || []).map(core => `<div class="core-row"><span>${core.name.toUpperCase()}</span><i><b style="width:${Math.min(100, core.usage)}%"></b></i><em>${pct(core.usage)}</em></div>`).join('');
   $('memValue').textContent = `${bytes(mem.used)} / ${bytes(mem.total)}`; $('memBar').style.width = `${Math.min(100, memPct)}%`; $('memMeta').textContent = `${pct(memPct)} used`;
   processRows = data.processes;
   $('processValue').textContent = data.processes.length; $('updated').textContent = `Updated ${new Date(data.timestamp).toLocaleTimeString()}`;

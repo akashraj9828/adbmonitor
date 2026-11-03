@@ -34,7 +34,7 @@ function parseMeminfo(text) {
   return { total, available, used: Math.max(0, total - available) };
 }
 
-function parseProcesses(text) {
+function parseProcesses(text, limit = 100) {
   const lines = text.trim().split('\n').filter(Boolean);
   const header = lines.findIndex(line => /PID/i.test(line) && /NAME|CMD|COMMAND/i.test(line));
   const data = (header >= 0 ? lines.slice(header + 1) : lines).map(line => line.trim().split(/\s+/)).filter(parts => /^\d+$/.test(parts[0]));
@@ -43,7 +43,7 @@ function parseProcesses(text) {
     const hasExtended = parts.length >= 6 && !Number.isNaN(Number(cpuOrMem));
     if (hasExtended) return { pid: number(pid), user, name: nameOrCpu, cpu: number(cpuOrMem), memory: number(memOrRss), rss: number(rssOrName) };
     return { pid: number(pid), user: user || '-', name: parts.slice(4).join(' ') || nameOrCpu, cpu: number(cpuOrMem), memory: number(memOrRss), rss: 0 };
-  }).filter(p => p.pid).sort((a, b) => b.cpu - a.cpu).slice(0, 100);
+  }).filter(p => p.pid).sort((a, b) => b.cpu - a.cpu).slice(0, limit);
 }
 
 function parseCpuInfo(text) {
@@ -77,20 +77,116 @@ function parseMeminfoDetail(text) {
   return { pss: total ? Number(total[1]) : 0, privateDirty: readKb('Private Dirty'), swapPss: readKb('Swap Pss'), heapSize: readKb('Heap Size'), heapAlloc: readKb('Heap Alloc'), heapFree: readKb('Heap Free') };
 }
 
-const snapshots = new Map();
+const coreCounts = new Map();
+const procfsSnapshots = new Map();
+const procfsTotalSnapshots = new Map();
+const cpuSnapshots = new Map();
+
+function parseCpuStats(text) {
+  return text.split('\n').map(line => line.trim().split(/\s+/)).filter(parts => /^cpu\d*$/.test(parts[0])).map(parts => {
+    const values = parts.slice(1).map(Number);
+    return { name: parts[0], idle: (values[3] || 0) + (values[4] || 0), total: values.reduce((sum, value) => sum + value, 0) };
+  });
+}
+
+function cpuPercentage(previous, current) {
+  if (!previous || !current) return 0;
+  const total = current.total - previous.total;
+  const idle = current.idle - previous.idle;
+  return total > 0 ? Math.round((1 - idle / total) * 1000) / 10 : 0;
+}
 async function collect(serial) {
   const shell = command => adb(['-s', serial, 'shell', command]);
-  const [stat, meminfo, cpuInfo, ps] = await Promise.all([
-    shell('cat /proc/stat | head -n 1'),
-    shell('cat /proc/meminfo'),
-    shell('dumpsys cpuinfo'),
-    shell('ps -A -o PID,USER,NAME,%CPU,%MEM,RSS').catch(() => shell('ps -A'))
+  const [meminfo, procfs] = await Promise.all([shell('cat /proc/meminfo'), collectProcfs(serial)]);
+  const memory = parseMeminfo(meminfo);
+  const processes = procfs.processes.map(process => ({ ...process, memory: memory.total ? Math.round((process.rss / 1024 / memory.total) * 100000) / 1000 : 0 }));
+  return { serial, timestamp: new Date().toISOString(), cpu: { usage: procfs.usage, cores: coreCounts.get(serial) || 1, perCore: procfs.perCore }, memory, processes: processes.sort((a, b) => b.cpu - a.cpu) };
+}
+
+function parseProcfsSnapshot(text) {
+  return text.trim().split('\n').filter(Boolean).map(line => {
+    const [pid, name, state, userTicks, systemTicks, rssPages] = line.split('|');
+    return { pid: Number(pid), name, state, ticks: Number(userTicks || 0) + Number(systemTicks || 0), rss: Number(rssPages || 0) * 4 };
+  }).filter(process => process.pid);
+}
+
+function parseProcfsStatus(text) {
+  const result = new Map();
+  text.trim().split('\n').filter(Boolean).forEach(line => {
+    const [pid, name, uid, rss] = line.split('|');
+    if (pid) result.set(Number(pid), { name, uid, rss: Number(rss || 0) });
+  });
+  return result;
+}
+
+function parseProcfsCmdlines(text) {
+  const result = new Map();
+  text.trim().split('\n').filter(Boolean).forEach(line => {
+    const separator = line.indexOf('|');
+    if (separator < 1) return;
+    const pid = Number(line.slice(0, separator));
+    const command = line.slice(separator + 1).trim().split(/\s+/)[0];
+    if (pid && command) result.set(pid, command);
+  });
+  return result;
+}
+
+function displayUser(uid) {
+  if (uid === '0') return 'root';
+  if (uid === '1000') return 'system';
+  return uid ? `uid:${uid}` : 'unknown';
+}
+
+async function collectProcfs(serial) {
+  const shell = command => adb(['-s', serial, 'shell', command], 10000);
+  const [stat, output, statusOutput, cmdlineOutput] = await Promise.all([
+    shell('cat /proc/stat'),
+    shell("awk '{openpos=index($0,\"(\"); endpos=index($0,\") \" ); comm=substr($0,openpos+1,endpos-openpos-1); rest=substr($0,endpos+2); split(rest,a,\" \" ); print $1 \"|\" comm \"|\" a[1] \"|\" a[12] \"|\" a[13] \"|\" a[22]}' /proc/[0-9]*/stat 2>/dev/null || true"),
+    shell("awk 'FNR==1 { if (pid != \"\") print pid \"|\" name \"|\" uid \"|\" rss; pid=FILENAME; sub(/^\\/proc\\//,\"\",pid); sub(/\\/status$/,\"\",pid); name=\"\"; uid=\"\"; rss=0 } /^Name:/ {name=$2} /^Uid:/ {uid=$2} /^VmRSS:/ {rss=$2} END {if (pid != \"\") print pid \"|\" name \"|\" uid \"|\" rss}' /proc/[0-9]*/status 2>/dev/null || true"),
+    shell("awk -v RS='\\0' 'FNR==1 {pid=FILENAME; sub(/^\\/proc\\//,\"\",pid); sub(/\\/cmdline$/,\"\",pid); if (length($0)>0) print pid \"|\" $0}' /proc/[0-9]*/cmdline 2>/dev/null || true")
   ]);
-  const cpuParts = stat.trim().split(/\s+/).slice(1).map(Number);
-  const currentCpu = { idle: (cpuParts[3] || 0) + (cpuParts[4] || 0), total: cpuParts.reduce((sum, value) => sum + value, 0) };
-  const previous = snapshots.get(serial);
-  snapshots.set(serial, currentCpu);
-  return { serial, timestamp: new Date().toISOString(), cpu: { usage: diffCpu(previous, currentCpu), cores: Number((await shell('nproc').catch(() => '1')).trim()) || 1 }, memory: parseMeminfo(meminfo), processes: parseProcesses(ps), cpuProcesses: parseCpuInfo(cpuInfo) };
+  const current = parseProcfsSnapshot(output);
+  const statusByPid = parseProcfsStatus(statusOutput);
+  const cmdlineByPid = parseProcfsCmdlines(cmdlineOutput);
+  const cpuStats = parseCpuStats(stat);
+  const currentCpu = cpuStats.find(cpu => cpu.name === 'cpu');
+  const previousCpu = cpuSnapshots.get(serial);
+  const previousCores = previousCpu?.cores || [];
+  cpuSnapshots.set(serial, { total: currentCpu, cores: cpuStats.filter(cpu => cpu.name !== 'cpu') });
+  const previous = procfsSnapshots.get(serial);
+  const currentTotal = currentCpu?.total || 0;
+  const previousTotal = procfsTotalSnapshots.get(serial);
+  procfsSnapshots.set(serial, current);
+  procfsTotalSnapshots.set(serial, currentTotal);
+  const previousByPid = new Map((previous || []).map(process => [process.pid, process]));
+  const totalDelta = previousTotal === undefined ? 0 : currentTotal - previousTotal;
+  const cores = coreCounts.get(serial) || 1;
+  current.forEach(process => {
+    const previousProcess = previousByPid.get(process.pid);
+    const processDelta = previousProcess ? process.ticks - previousProcess.ticks : 0;
+    process.cpu = totalDelta > 0 ? Math.round((processDelta / totalDelta) * cores * 1000) / 10 : 0;
+    const status = statusByPid.get(process.pid);
+    process.user = displayUser(status?.uid);
+    process.uid = status?.uid || '';
+    process.rss = status?.rss || process.rss;
+    process.name = cmdlineByPid.get(process.pid) || process.name;
+  });
+  const usage = cpuPercentage(previousCpu?.total, currentCpu);
+  const perCore = cpuStats.filter(cpu => cpu.name !== 'cpu').map((cpu, index) => ({ name: cpu.name, usage: cpuPercentage(previousCores[index], cpu) }));
+  if (!coreCounts.has(serial)) coreCounts.set(serial, Number((await shell('nproc').catch(() => '1')).trim()) || 1);
+  return { processes: current, totalDelta, usage, perCore };
+}
+
+async function compareCollectors(serial) {
+  const [procfsData, psOutput] = await Promise.all([collectProcfs(serial), adb(['-s', serial, 'shell', 'ps -A -o PID,USER,NAME,%CPU,%MEM,RSS']).catch(() => '')]);
+  const allPsProcesses = parseProcesses(psOutput, Number.MAX_SAFE_INTEGER);
+  const procfsByPid = new Map(procfsData.processes.map(process => [process.pid, process]));
+  const psByPid = new Map(allPsProcesses.map(process => [process.pid, process]));
+  const matched = [...psByPid.keys()].filter(pid => procfsByPid.has(pid)).map(pid => {
+    const psProcess = psByPid.get(pid), procProcess = procfsByPid.get(pid);
+    return { pid, name: psProcess.name, psCpu: psProcess.cpu, procfsCpu: procProcess.cpu, cpuDiff: Math.round((procProcess.cpu - psProcess.cpu) * 10) / 10, psRssKb: psProcess.rss, procfsRssKb: procProcess.rss, rssDiffKb: procProcess.rss - psProcess.rss };
+  });
+  return { serial, timestamp: new Date().toISOString(), ps: { count: allPsProcesses.length, dashboardRows: 100 }, procfs: { count: procfsData.processes.length }, matchedCount: matched.length, onlyInPs: [...psByPid.keys()].filter(pid => !procfsByPid.has(pid)), onlyInProcfs: [...procfsByPid.keys()].filter(pid => !psByPid.has(pid)), matched };
 }
 
 async function collectProcess(serial, pid) {
@@ -147,6 +243,13 @@ const server = createServer(async (req, res) => {
       const detail = await collectProcess(serial, pid);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       return res.end(JSON.stringify(detail));
+    }
+    if (url.pathname === '/api/compare') {
+      const serial = url.searchParams.get('serial');
+      if (!serial) { res.writeHead(400); return res.end('serial is required'); }
+      const comparison = await compareCollectors(serial);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(comparison));
     }
     const requested = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
     if (requested.includes('..')) { res.writeHead(400); return res.end('Bad request'); }
